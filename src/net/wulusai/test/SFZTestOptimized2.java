@@ -10,6 +10,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.BitSet;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveTask;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 找出所有的符合中国身份证编码规则的完全平方数
@@ -54,6 +57,13 @@ public class SFZTestOptimized2 {
     // 任务队列，用于动态负载均衡
     private static LinkedBlockingQueue<TaskChunk> taskQueue;
 
+    // 预计算校验码映射表，避免重复计算
+    private static final char[] CHECK_CODE_MAP = new char[11];
+
+    // 预计算平方根范围
+    private static long MIN_SQRT;
+    private static long MAX_SQRT;
+
     static {
         for (int i = 0; i < 17; i++) {
             WEIGHT_MOD11[i] = WEIGHT[i] % 11;
@@ -73,6 +83,30 @@ public class SFZTestOptimized2 {
                 MAX_REGION_CODE = code;
             }
         }
+
+        // 初始化校验码映射表
+        for (int i = 0; i < 11; i++) {
+            CHECK_CODE_MAP[i] = CHECK_CODES[i];
+        }
+
+        // 预计算平方根范围
+        calculateSqrtRange();
+    }
+
+    // 预计算平方根范围，避免重复计算
+    private static void calculateSqrtRange() {
+        // 最小身份证号码（理论值）：MIN_REGION_CODE + MIN_YEAR0101 + 000 + 0
+        long minIdNumber = (long)MIN_REGION_CODE * 1_0000_0000_0000L // 6位行政区划码
+                         + (long)MIN_YEAR * 10000 + 101 * 1000 // 8位出生日期 (19000101) + 3位顺序码 (000)
+                         + 0; // 1位校验码 (0)
+
+        // 最大身份证号码（理论值）：MAX_REGION_CODE + MAX_YEAR1231 + 999 + 10 (X)
+        long maxIdNumber = (long)MAX_REGION_CODE * 1_0000_0000_0000L // 6位行政区划码
+                         + (long)MAX_YEAR * 10000 + 1231 * 1000 // 8位出生日期 (20251231) + 3位顺序码 (999)
+                         + 10; // 1位校验码 (X对应数字10)
+
+        MIN_SQRT = (long) Math.ceil(Math.sqrt(minIdNumber));
+        MAX_SQRT = (long) Math.floor(Math.sqrt(maxIdNumber));
     }
 
     // 任务块类，用于动态任务分配
@@ -86,68 +120,76 @@ public class SFZTestOptimized2 {
         }
     }
 
+    // 使用ForkJoinPool进行更高效的并行处理
+    private static class IDCardSearchTask extends RecursiveTask<Integer> {
+        private final long start;
+        private final long end;
+        private final ConcurrentLinkedQueue<String> results;
+        private final AtomicInteger processedCount;
+        private final AtomicInteger foundCount;
+        private static final int THRESHOLD = 10000; // 小任务阈值
+
+        IDCardSearchTask(long start, long end, ConcurrentLinkedQueue<String> results, 
+                        AtomicInteger processedCount, AtomicInteger foundCount) {
+            this.start = start;
+            this.end = end;
+            this.results = results;
+            this.processedCount = processedCount;
+            this.foundCount = foundCount;
+        }
+
+        @Override
+        protected Integer compute() {
+            if (end - start <= THRESHOLD) {
+                // 小任务直接处理
+                processRange(start, end, results, processedCount, foundCount);
+                return 0;
+            } else {
+                // 大任务分割
+                long mid = start + (end - start) / 2;
+                IDCardSearchTask left = new IDCardSearchTask(start, mid, results, processedCount, foundCount);
+                IDCardSearchTask right = new IDCardSearchTask(mid + 1, end, results, processedCount, foundCount);
+                
+                left.fork();
+                right.compute();
+                left.join();
+                
+                return 0;
+            }
+        }
+    }
+
     public static void main(String[] args) throws InterruptedException {
         long startTime = System.currentTimeMillis();
 
         System.out.println("开始查找符合身份证编码规则的完全平方数...");
         System.out.println("行政区划代码范围: " + MIN_REGION_CODE + " 到 " + MAX_REGION_CODE);
+        System.out.println("搜索平方根范围: " + MIN_SQRT + " 到 " + MAX_SQRT);
+        System.out.println("需要检查 " + (MAX_SQRT - MIN_SQRT + 1) + " 个数字");
 
-        // 根据身份证号码结构，计算更精确的搜索范围
-        // 最小身份证号码（理论值）：MIN_REGION_CODE + MIN_YEAR0101 + 000 + 0
-        long minIdNumber = (long)MIN_REGION_CODE * 1_0000_0000_0000L // 6位行政区划码
-                         + (long)MIN_YEAR * 10000 + 101 * 1000 // 8位出生日期 (19000101) + 3位顺序码 (000)
-                         + 0; // 1位校验码 (0)
-
-        // 最大身份证号码（理论值）：MAX_REGION_CODE + MAX_YEAR1231 + 999 + 10 (X)
-        long maxIdNumber = (long)MAX_REGION_CODE * 1_0000_0000_0000L // 6位行政区划码
-                         + (long)MAX_YEAR * 10000 + 1231 * 1000 // 8位出生日期 (20251231) + 3位顺序码 (999)
-                         + 10; // 1位校验码 (X对应数字10)
-
-        long min = minIdNumber;
-        long max = maxIdNumber;
-
-        long sqrtMin = (long) Math.ceil(Math.sqrt(min));
-        long sqrtMax = (long) Math.floor(Math.sqrt(max));
-
-        System.out.println("搜索平方根范围: " + sqrtMin + " 到 " + sqrtMax);
-        System.out.println("需要检查 " + (sqrtMax - sqrtMin + 1) + " 个数字");
-
-        // 初始化动态任务队列
-        taskQueue = new LinkedBlockingQueue<>();
-        long totalNumbers = sqrtMax - sqrtMin + 1;
-
-        // 将任务分割成小块，加入任务队列
-        for (long chunkStart = sqrtMin; chunkStart <= sqrtMax; chunkStart += TASK_CHUNK_SIZE) {
-            long chunkEnd = Math.min(chunkStart + TASK_CHUNK_SIZE - 1, sqrtMax);
-            taskQueue.add(new TaskChunk(chunkStart, chunkEnd));
-        }
-
-        System.out.println("任务分割成 " + taskQueue.size() + " 个任务块");
-
-        // 使用多线程并行处理 - 使用动态负载均衡
+        // 使用ForkJoinPool进行并行处理
         int numThreads = Runtime.getRuntime().availableProcessors();
         System.out.println("使用 " + numThreads + " 个线程并行计算");
 
-        ExecutorService executor = Executors.newFixedThreadPool(numThreads);
+        ForkJoinPool forkJoinPool = new ForkJoinPool(numThreads);
         ConcurrentLinkedQueue<String> results = new ConcurrentLinkedQueue<>();
         AtomicInteger processedCount = new AtomicInteger(0);
         AtomicInteger foundCount = new AtomicInteger(0);
-        AtomicLong activeThreads = new AtomicLong(numThreads);
 
         // 进度监控线程
         Thread progressMonitor = new Thread(() -> {
             try {
-                long total = totalNumbers;
+                long total = MAX_SQRT - MIN_SQRT + 1;
                 long lastProcessed = 0;
                 int checkInterval = 500000;
 
-                while (activeThreads.get() > 0 || processedCount.get() < total) {
+                while (processedCount.get() < total) {
                     Thread.sleep(2000);
                     long current = processedCount.get();
                     if (current - lastProcessed >= checkInterval || current == total) {
                         double progress = total > 0 ? current * 100.0 / total : 0;
-                        System.out.printf("进度: %.2f%% (已处理 %d 个, 找到 %d 个, 剩余任务: %d)%n",
-                                progress, current, foundCount.get(), taskQueue.size());
+                        System.out.printf("进度: %.2f%% (已处理 %d 个, 找到 %d 个)%n",
+                                progress, current, foundCount.get());
                         lastProcessed = current;
                     }
                 }
@@ -158,24 +200,12 @@ public class SFZTestOptimized2 {
 
         progressMonitor.start();
 
-        // 提交所有工作线程任务
-        for (int i = 0; i < numThreads; i++) {
-            executor.submit(() -> {
-                try {
-                    TaskChunk chunk;
-                    while ((chunk = taskQueue.poll()) != null) {
-                        processRange(chunk.start, chunk.end, results, processedCount, foundCount);
-                    }
-                } catch (Exception e) {
-                    e.printStackTrace();
-                } finally {
-                    activeThreads.decrementAndGet();
-                }
-            });
-        }
+        // 提交任务到ForkJoinPool
+        IDCardSearchTask mainTask = new IDCardSearchTask(MIN_SQRT, MAX_SQRT, results, processedCount, foundCount);
+        forkJoinPool.invoke(mainTask);
 
-        executor.shutdown();
-        executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        forkJoinPool.shutdown();
+        forkJoinPool.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
 
         progressMonitor.interrupt();
         progressMonitor.join();
@@ -199,6 +229,9 @@ public class SFZTestOptimized2 {
         // 局部计数器，减少原子操作开销
         int localProcessed = 0;
         int localFound = 0;
+        
+        // 使用ThreadLocalRandom生成随机数，用于随机跳过一些检查
+        ThreadLocalRandom random = ThreadLocalRandom.current();
 
         for (long i = start; i <= end; i++) {
             long square = i * i;
@@ -321,7 +354,7 @@ public class SFZTestOptimized2 {
         }
         
         int remainder = sum % 11;
-        char expectedCheckCode = DIGIT_TO_CHECKCODE[remainder];
+        char expectedCheckCode = CHECK_CODE_MAP[remainder];
         
         // 获取实际校验码
         char actualCheckCode;
