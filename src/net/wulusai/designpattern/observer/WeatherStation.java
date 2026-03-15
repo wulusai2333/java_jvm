@@ -3,6 +3,9 @@ package net.wulusai.designpattern.observer;
 import net.wulusai.designpattern.observer.observer.CurrentConditionsDisplay;
 import net.wulusai.designpattern.observer.subject.WeatherData;
 
+/**
+ * 观察者模式为：它定义了一种一对多的依赖关系，当一个对象的状态发生改变时，所有依赖它的对象都会自动得到通知并更新，从而实现松耦合的通信。
+ */
 public class WeatherStation {
     public static void main(String[] args) {
         WeatherData weatherData = new WeatherData();

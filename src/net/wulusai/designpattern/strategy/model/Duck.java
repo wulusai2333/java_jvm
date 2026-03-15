@@ -6,7 +6,7 @@ import net.wulusai.designpattern.strategy.able.QuackAble;
 /**
  * 父类
  * has 比 is 更好
- * 策略模式:它通过封装一系列可互换的算法，允许在运行时动态选择行为，以提升代码的灵活性和可维护性。
+ *
  */
 public class Duck {
     /**
