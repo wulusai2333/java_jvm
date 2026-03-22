@@ -16,13 +16,22 @@ import java.util.BitSet;
  * 优化版本：减少字符串操作，使用数学运算替代，改进负载均衡
  总计找到 123 个符合条件的完全平方数
  总耗时: 0.289 秒
+
+ 使用BitSet替代HashSet：BitSet的内存占用更小，访问速度更快，特别是对于连续的整数范围
+ 添加范围检查：在进行BitSet查询前，先检查regionCode是否在有效范围内，避免不必要的BitSet查询
+ 移除重复验证：在isValidIDNumberFull中移除了对regionCode的BitSet检查，因为已经在processRange中执行过
+
+ 负载均衡改进方案
+ 使用动态任务分配：将任务分割成更小的块，让线程动态获取任务块
+ 使用工作窃取模式：实现更均衡的负载分配
+ 优化任务分配粒度：根据实际验证复杂度调整任务块大小
  */
 public class SFZTestOptimized2 {
     private static final int[] WEIGHT = {7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2};
     private static final char[] CHECK_CODES = {'1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'};
     
     // 完全平方数的个位数模式（位图表示）
-    private static final int SQUARE_LAST_DIGIT_MASK = 
+    private static final int SQUARE_LAST_DIGIT_MASK =
         (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 9);
     
     // 预计算权重模11的结果
